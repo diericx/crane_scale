@@ -1,9 +1,18 @@
 #include <ArduinoBLE.h>
+#include "HX711.h"
 
 // Progressor Service and Characteristic UUIDs
 const char *PROGRESSOR_SERVICE_UUID = "7e4e1701-1ea6-40c9-9dcc-13d34ffead57";
 const char *DATA_POINT_UUID = "7e4e1702-1ea6-40c9-9dcc-13d34ffead57";
 const char *CONTROL_POINT_UUID = "7e4e1703-1ea6-40c9-9dcc-13d34ffead57";
+
+// HX711 Load Cell Configuration
+#define LOADCELL_DOUT_PIN 3 // D1 pin (GPIO3)
+#define LOADCELL_SCK_PIN 2  // D0 pin (GPIO2)
+HX711 scale;
+
+// 236250
+float calibration_factor = 15750; // Adjusted for better overall accuracy
 
 // BLE Service and Characteristics
 BLEService progressorService(PROGRESSOR_SERVICE_UUID);
@@ -12,29 +21,37 @@ BLECharacteristic controlPointCharacteristic(CONTROL_POINT_UUID, BLEWrite, 20);
 
 // Timing variables
 unsigned long lastWeightSend = 0;
-const unsigned long WEIGHT_INTERVAL = 2000; // Send weight every 2 seconds
+const unsigned long WEIGHT_INTERVAL = 100; // Send weight every 2 seconds
+unsigned long lastWeightPrint = 0;
+const unsigned long WEIGHT_PRINT_INTERVAL = 250; // Print weight every 250ms
 bool measurementActive = false;
 unsigned long measurementStartTime = 0;
 
-// Mock weight values
-float mockWeight = 25.5; // Starting weight in kg
-bool weightIncreasing = true;
+float getWeightInKg()
+{
+  if (scale.is_ready())
+  {
+    float weight_lbs = scale.get_units(5);
+    return weight_lbs * 0.453592; // Convert pounds to kg
+  }
+  return 0.0;
+}
+
+float getWeightInLbs()
+{
+  if (scale.is_ready())
+  {
+    return scale.get_units(5);
+  }
+  return 0.0;
+}
 
 void sendWeightMeasurement()
 {
-  // Update mock weight (simulate varying load)
-  if (weightIncreasing)
-  {
-    mockWeight += 0.5;
-    if (mockWeight > 50.0)
-      weightIncreasing = false;
-  }
-  else
-  {
-    mockWeight -= 0.3;
-    if (mockWeight < 5.0)
-      weightIncreasing = true;
-  }
+  // Get real weight from load cell in kg
+  float currentWeight = getWeightInKg();
+  Serial.print("Current weight in KG: ");
+  Serial.println(currentWeight);
 
   // Calculate timestamp (microseconds since measurement started)
   uint32_t timestamp = (millis() - measurementStartTime) * 1000;
@@ -50,7 +67,7 @@ void sendWeightMeasurement()
     float f;
     uint8_t bytes[4];
   } weightUnion;
-  weightUnion.f = mockWeight;
+  weightUnion.f = currentWeight;
 
   data[2] = weightUnion.bytes[0];
   data[3] = weightUnion.bytes[1];
@@ -67,7 +84,7 @@ void sendWeightMeasurement()
   dataPointCharacteristic.writeValue(data, 10);
 
   Serial.print("Sent weight: ");
-  Serial.print(mockWeight);
+  Serial.print(currentWeight);
   Serial.print(" kg, timestamp: ");
   Serial.println(timestamp);
 }
@@ -110,7 +127,8 @@ void onControlPointWrite(BLEDevice central, BLECharacteristic characteristic)
     {
     case 0x64: // Tare scale
       Serial.println("Tare scale command received");
-      mockWeight = 0.0;
+      scale.tare(); // Reset the scale to 0
+      Serial.println("Scale tared");
       break;
 
     case 0x65: // Start weight measurement
@@ -150,6 +168,16 @@ void setup()
 
   Serial.println("Progressor Emulator Starting...");
 
+  // Initialize HX711 load cell
+  Serial.println("Initializing HX711 load cell...");
+  scale.begin(LOADCELL_DOUT_PIN, LOADCELL_SCK_PIN);
+  scale.set_scale(calibration_factor);
+
+  Serial.println("Taring scale... Please ensure no weight is on the scale.");
+  delay(2000);  // Give time to remove any weight
+  scale.tare(); // Reset the scale to 0
+  Serial.println("Scale tared and ready!");
+
   // Initialize BLE
   if (!BLE.begin())
   {
@@ -181,6 +209,16 @@ void setup()
 
 void loop()
 {
+  // // Print weight reading every 250ms
+  // if (millis() - lastWeightPrint >= WEIGHT_PRINT_INTERVAL)
+  // {
+  //   float weightLbs = getWeightInLbs();
+  //   Serial.print("Weight: ");
+  //   Serial.print(weightLbs, 2);
+  //   Serial.println(" lbs");
+  //   lastWeightPrint = millis();
+  // }
+
   // Poll for BLE events
   BLE.poll();
 
@@ -196,7 +234,17 @@ void loop()
     {
       BLE.poll();
 
-      // Send mock weight data if measurement is active
+      // // Print weight reading every 250ms even when connected
+      // if (millis() - lastWeightPrint >= WEIGHT_PRINT_INTERVAL)
+      // {
+      //   float weightLbs = getWeightInLbs();
+      //   Serial.print("Weight: ");
+      //   Serial.print(weightLbs, 2);
+      //   Serial.println(" lbs");
+      //   lastWeightPrint = millis();
+      // }
+
+      // Send weight data if measurement is active
       if (measurementActive && (millis() - lastWeightSend >= WEIGHT_INTERVAL))
       {
         sendWeightMeasurement();
