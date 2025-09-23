@@ -7,8 +7,8 @@ const char *DATA_POINT_UUID = "7e4e1702-1ea6-40c9-9dcc-13d34ffead57";
 const char *CONTROL_POINT_UUID = "7e4e1703-1ea6-40c9-9dcc-13d34ffead57";
 
 // HX711 Load Cell Configuration
-#define LOADCELL_DOUT_PIN 3 // D1 pin (GPIO3)
 #define LOADCELL_SCK_PIN 2  // D0 pin (GPIO2)
+#define LOADCELL_DOUT_PIN 3 // D1 pin (GPIO3)
 HX711 scale;
 
 // 236250
@@ -21,17 +21,18 @@ BLECharacteristic controlPointCharacteristic(CONTROL_POINT_UUID, BLEWrite, 20);
 
 // Timing variables
 unsigned long lastWeightSend = 0;
-const unsigned long WEIGHT_INTERVAL = 100; // Send weight every 2 seconds
+const unsigned long WEIGHT_INTERVAL = 12; // Send weight every 12ms (~83Hz)
 unsigned long lastWeightPrint = 0;
 const unsigned long WEIGHT_PRINT_INTERVAL = 250; // Print weight every 250ms
 bool measurementActive = false;
 unsigned long measurementStartTime = 0;
+float lastValidWeight = 0.0; // Store last valid weight reading
 
 float getWeightInKg()
 {
   if (scale.is_ready())
   {
-    float weight_lbs = scale.get_units(5);
+    float weight_lbs = scale.get_units(1);
     return weight_lbs * 0.453592; // Convert pounds to kg
   }
   return 0.0;
@@ -41,15 +42,29 @@ float getWeightInLbs()
 {
   if (scale.is_ready())
   {
-    return scale.get_units(5);
+    return scale.get_units(1);
   }
   return 0.0;
 }
 
 void sendWeightMeasurement()
 {
-  // Get real weight from load cell in kg
-  float currentWeight = getWeightInKg();
+  // Only get new reading if scale is ready, otherwise use last valid weight
+  float currentWeight;
+  if (scale.is_ready())
+  {
+    float newWeight = scale.get_units(1) * 0.453592; // Convert pounds to kg directly
+    if (newWeight != 0.0 || lastValidWeight == 0.0)
+    { // Accept zero only if it's the first reading
+      lastValidWeight = newWeight;
+    }
+    currentWeight = lastValidWeight;
+  }
+  else
+  {
+    currentWeight = lastValidWeight; // Use last valid reading when scale not ready
+  }
+
   Serial.print("Current weight in KG: ");
   Serial.println(currentWeight);
 
@@ -83,10 +98,10 @@ void sendWeightMeasurement()
   // Send notification
   dataPointCharacteristic.writeValue(data, 10);
 
-  Serial.print("Sent weight: ");
-  Serial.print(currentWeight);
-  Serial.print(" kg, timestamp: ");
-  Serial.println(timestamp);
+  // Serial.print("Sent weight: ");
+  // Serial.print(currentWeight);
+  // Serial.print(" kg, timestamp: ");
+  // Serial.println(timestamp);
 }
 
 void sendBatteryVoltage()
@@ -209,16 +224,6 @@ void setup()
 
 void loop()
 {
-  // // Print weight reading every 250ms
-  // if (millis() - lastWeightPrint >= WEIGHT_PRINT_INTERVAL)
-  // {
-  //   float weightLbs = getWeightInLbs();
-  //   Serial.print("Weight: ");
-  //   Serial.print(weightLbs, 2);
-  //   Serial.println(" lbs");
-  //   lastWeightPrint = millis();
-  // }
-
   // Poll for BLE events
   BLE.poll();
 
@@ -233,16 +238,6 @@ void loop()
     while (central.connected())
     {
       BLE.poll();
-
-      // // Print weight reading every 250ms even when connected
-      // if (millis() - lastWeightPrint >= WEIGHT_PRINT_INTERVAL)
-      // {
-      //   float weightLbs = getWeightInLbs();
-      //   Serial.print("Weight: ");
-      //   Serial.print(weightLbs, 2);
-      //   Serial.println(" lbs");
-      //   lastWeightPrint = millis();
-      // }
 
       // Send weight data if measurement is active
       if (measurementActive && (millis() - lastWeightSend >= WEIGHT_INTERVAL))
